@@ -35,26 +35,26 @@ static const char *template[] = {
     "    const char *name;\n"
     "    const unsigned char *buff;\n"
     "    int sz;\n"
-    "} embedded_module;\n"
+    "} Chunk;\n"
     "\n"
-    "static const embedded_module modules[] = {\n",
+    "static const Chunk chunks[] = {\n",
     "    {\"%s\", %s, sizeof(%s)},\n",
     "};\n"
     "\n"
-    "static const int num_modules = sizeof(modules) / sizeof(embedded_module);\n"
+    "static const int num_chunks = sizeof(chunks) / sizeof(Chunk);\n"
     "\n"
-    "static int loader_Embed(lua_State *L) {\n"
+    "static int module_loader(lua_State *L) {\n"
     "    const char *name;\n"
     "    int i;\n"
-    "    embedded_module m;\n"
+    "    Chunk m;\n"
     "    const char *buff;\n"
     "    size_t sz;\n"
     "    name = luaL_checkstring(L, 1);\n"
-    "    for (i = 0; i < num_modules; i++) {\n"
-    "        m = modules[i];\n"
+    "    for (i = 1; i < num_chunks; i++) {\n"
+    "        m = chunks[i];\n"
     "        if (0 == strcmp(name, m.name)) {\n"
     "            if (luaL_loadbuffer(L, m.buff, m.sz, name) != 0) {\n"
-    "                luaL_error(L, \"error loading embedded module \\\"%%s\\\"\", name);\n"
+    "                luaL_error(L, \"Error loading embedded module \\\"%%s\\\"\", name);\n"
     "            }\n"
     "            return 1; /* library loaded successfully */\n"
     "        }\n"
@@ -86,9 +86,10 @@ static const char *template[] = {
     "    assert(lua_isfunction(L, -1));\n"
     "    lua_pushvalue(L, -3);\n"
     "    lua_pushinteger(L, 1);\n"
-    "    lua_pushcfunction(L, loader_Embed);\n"
+    "    lua_pushcfunction(L, module_loader);\n"
     "    lua_call(L, 3, LUA_MULTRET);\n"
-    "    luaL_loadbuffer(L, %s, sizeof(%s), 0);\n"
+    "    // load entrance\n"
+    "    luaL_loadbuffer(L, chunks[0].buff, chunks[0].sz, 0);\n"
     "    status = lua_pcall(L, 0, LUA_MULTRET, 0);\n"
     "    if (status && !lua_isnil(L, -1)) {\n"
     "        msg = (char *)lua_tostring(L, -1);\n"
@@ -162,7 +163,7 @@ static char *strip_filename(char *fname) {
     return ret;
 }
 
-void bin2c(FILE *fp, char *buff, int sz) {
+static void bin2c(FILE *fp, char *buff, int sz) {
     int i;
     int first = 1;
     for (i = 0; i < sz; i++) {
@@ -175,31 +176,44 @@ void bin2c(FILE *fp, char *buff, int sz) {
     }
 }
 
+static char *arg0 = 0;
+
+static void print_usage() {
+    printf("Usage: %s [-h, --help] [-o, --output filename] <entry filename> [module filename] [module filename] ...\n", arg0);
+    printf("Convert single or multiple lua files into one unique compilable C file, which can be compiled to generate single executable program.\n");
+    printf("Entry filename is required, that is, the lua file that is directly executed, output filename and module filename are optional, if output filename is not specified, default is stdout, module filename refers to the \"require\" lua file, if there is no require, of course, you don't need to fill it.\n");
+}
+
 int main(int argc, char *argv[]) {
     lua_State *L;
     char *ofname = 0;
     FILE *out;
-    Chunk *entrance = 0;
-    Chunk *modules = 0;
-    int num_modules = 0;
+    // C语言无法定义零长度数组，所以entrance和module放在一起，entrance始终是第一个元素
+    Chunk *chunks = 0;
+    int num_chunks = 0;
     char *arg;
     char prev_flag = 0;
     char curr_flag = 0;
     int i;
     char *s;
+    arg0 = argv[0];
     if (argc < 2) {
-        printf("Usage: %s <entry filename> [-o output filename] [-m module filename1 [-m module filename2 ...]]\n", argv[0]);
-        printf("Convert single or multiple lua files into one unique compilable C file, which can be compiled to generate single executable program.\n");
-        printf("Entry filename is required, that is, the lua file that is directly executed, output filename and module filename are optional, if output filename is not specified, default is stdout, module filename refers to the \"require\" lua file, if there is no require, of course, you don't need to fill it.\n");
+        print_usage();
         return -1;
     }
     // 解析参数
     for (i = 1; i < argc; i++) {
         arg = argv[i];
-        if (0 == strcmp(arg, "-o")) {
-            curr_flag = 'o';
-        } else if (0 == strcmp(arg, "-m")) {
-            curr_flag = 'm';
+        if ('-' == arg[0]) {
+            if ((0 == strcmp(arg, "-h")) || (0 == strcmp(arg, "--help"))) {
+                print_usage();
+                return -1;
+            } else if ((0 == strcmp(arg, "-o")) || (0 == strcmp(arg, "--output"))) {
+                curr_flag = 'o';
+            } else {
+                fprintf(stderr, "Unknown flag \"%s\".\n", arg);
+                return -1;
+            }
         } else {
             curr_flag = 0;
         }
@@ -216,38 +230,25 @@ int main(int argc, char *argv[]) {
                     }
                     ofname = arg;
                     break;
-                case 'm':
-                    if (0 == (s = strip_filename(arg))) {
-                        fprintf(stderr, "Invalid module file name \"%s\".\n", arg);
-                        return -1;
-                    }
-                    num_modules++;
-                    modules = (Chunk *)realloc(modules, sizeof(Chunk) * num_modules);
-                    modules[num_modules - 1].fname = arg;
-                    modules[num_modules - 1].name = s;
-                    modules[num_modules - 1].buff = 0;
-                    modules[num_modules - 1].sz = 0;
-                    break;
                 }
             }
         } else {
             if (!curr_flag) {
-                if (entrance) {
-                    fprintf(stderr, "Only one entrance is allowed.\n");
-                    return -1;
-                }
                 if (0 == (s = strip_filename(arg))) {
-                    fprintf(stderr, "Invalid entrance file name \"%s\".\n", arg);
+                    fprintf(stderr, "Invalid file name \"%s\".\n", arg);
                     return -1;
                 }
-                entrance = (Chunk *)calloc(1, sizeof(Chunk));
-                entrance->fname = arg;
-                entrance->name = s;
+                chunks = (Chunk *)realloc(chunks, sizeof(Chunk) * (num_chunks + 1));
+                chunks[num_chunks].fname = arg;
+                chunks[num_chunks].name = s;
+                chunks[num_chunks].buff = 0;
+                chunks[num_chunks].sz = 0;
+                num_chunks++;
             }
         }
         prev_flag = curr_flag;
     }
-    if (0 == entrance) {
+    if (0 == num_chunks) {
         fprintf(stderr, "Must specify entrance file.\n");
         return -1;
     }
@@ -263,14 +264,13 @@ int main(int argc, char *argv[]) {
     // 编译源文件
     L = luaL_newstate();
     luaL_openlibs(L);
-    luaL_loadfile(L, entrance->fname);
-    strip_dump(L, entrance);
-    // for (i = 0; i < entrance->sz; i++) {
-    //     printf("%d ", entrance->buff[i]);
-    // }
-    for (i = 0; i < num_modules; i++) {
-        luaL_loadfile(L, modules[i].fname);
-        strip_dump(L, &modules[i]);
+    for (i = 0; i < num_chunks; i++) {
+        if (luaL_loadfile(L, chunks[i].fname)) {
+            fprintf(stderr, "Failed to load file \"%s\".\n", chunks[i].fname);
+            lua_error(L);
+            return -1;
+        }
+        strip_dump(L, &chunks[i]);
     }
     lua_close(L);
     // 组装输出
@@ -284,19 +284,16 @@ int main(int argc, char *argv[]) {
         out = stdout;
     }
     fprintf(out, template[0]);
-    fprintf(out, template[1], entrance->name);
-    bin2c(out, entrance->buff, entrance->sz);
-    fprintf(out, template[2]);
-    for (i = 0; i < num_modules; i++) {
-        fprintf(out, template[1], modules[i].name);
-        bin2c(out, modules[i].buff, modules[i].sz);
+    for (i = 0; i < num_chunks; i++) {
+        fprintf(out, template[1], chunks[i].name);
+        bin2c(out, chunks[i].buff, chunks[i].sz);
         fprintf(out, template[2]);
     }
     fprintf(out, template[3]);
-    for (i = 0; i < num_modules; i++) {
-        fprintf(out, template[4], modules[i].name, modules[i].name, modules[i].name);
+    for (i = 0; i < num_chunks; i++) {
+        fprintf(out, template[4], chunks[i].name, chunks[i].name, chunks[i].name);
     }
-    fprintf(out, template[5], entrance->name, entrance->name);
+    fprintf(out, template[5]);
     fclose(out);
     return 0;
 }

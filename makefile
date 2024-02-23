@@ -7,7 +7,7 @@ LINK=link.exe /nologo
 all: bin2c.exe txt2c.exe lua2c.exe
 
 clean:
-    del /q *.dll *.exe *.obj *.lib *.exp *.bin test_embed.c
+    del /q *.dll *.exe *.obj *.lib *.exp *.bin test.c
 
 bin2c.exe: bin2c.c
     $(CC) bin2c.c
@@ -21,8 +21,8 @@ lua2c.exe: lua2c.c
     $(CC) /DLUA_BUILD_AS_DLL lua2c.c
     $(LINK) lua2c.obj lua51.lib
 
-test_embed.exe: lua2c.exe test_require.lua test_module_1.lua test_module_2.lua
-    lua2c test_require.lua -m test_module_1.lua -m test_module_2.lua -o test_embed.c
-    $(CC) test_embed.c
-    $(LINK) test_embed.obj lua51.lib
+test.exe: lua2c.exe test_require.lua test_module_1.lua test_module_2.lua
+    lua2c -o test.c test_require.lua test_module_1.lua test_module_2.lua
+    $(CC) test.c
+    $(LINK) test.obj lua51.lib
 
